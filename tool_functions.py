@@ -1,6 +1,10 @@
-import json, operator, time
+import json, operator, time, asyncio
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-def basic_calculator(input_str):
+tokenizer = AutoTokenizer.from_pretrained("Falconsai/text_summarization") # loading tokenizer
+model = AutoModelForSeq2SeqLM.from_pretrained("Falconsai/text_summarization") # loading model
+
+async def basic_calculator(input_str):
     """
     Perform a numeric operation on two numbers based on the input string or dictionary.
 
@@ -28,15 +32,18 @@ def basic_calculator(input_str):
         
         # validate required fields
         if not all(key in input_dict for key in ['num1', 'num2', 'operation']):
-            return "Error: Input must contain 'num1', 'num2', and 'operation'"
+            return "Error: Input must contain 'num1', 'num2', and 'operation'.\n"
 
         num1 = float(input_dict['num1'])  # convert to float to handle decimal numbers
         num2 = float(input_dict['num2'])
-        operation = input_dict['operation'].lower()  # make case-insensitive
+        print(f"[calculator]: num1: {num1}, num2: {num2}")
+
+        operation = input_dict['operation'].lower()
+        print(f"[calculator]: operation: {operation}")  # make case-insensitive
     except (json.JSONDecodeError, KeyError) as e:
-        return "Invalid input format. Please provide valid numbers and operation."
+        return "Invalid input format. Please provide valid numbers and operation.\n"
     except ValueError as e:
-        return "Error: Please provide valid numerical values."
+        return "Error: Please provide valid numerical values.\n"
 
     # define the supported operations with error handling
     operations = {
@@ -60,12 +67,12 @@ def basic_calculator(input_str):
 
     # check if the operation is supported
     if operation not in operations:
-        return f"[error]: Unsupported operation: '{operation}'. Supported operations are: {', '.join(operations.keys())}"
+        return f"[error]: Unsupported operation: '{operation}'. Supported operations are: {', '.join(operations.keys())}.\n"
 
     try:
         # special handling for division by zero
         if (operation in ['divide', 'floor_divide', 'modulus']) and num2 == 0:
-            return "[error]: Division by zero is not allowed"
+            return "[error]: Division by zero is not allowed.\n"
 
         # perform the operation
         result = operations[operation](num1, num2)
@@ -79,51 +86,53 @@ def basic_calculator(input_str):
         else:
             result_str = str(result)
 
-        return f"[calculator]: The answer is: {result_str}"
+        return f"[calculator]: The answer is: {result_str}.\n"
     except Exception as e:
-        return f"[error]: Error during calculation: {str(e)}"
+        return f"[error]: Error during calculation: {str(e)}.\n"
 
-def reverse_string(input_string):
+async def reverse_string(input_str):
     """
     Reverse the given string.
 
     Parameters:
-    input_string (str): The string to be reversed.
+    input_str (str): The string to be reversed.
 
     Returns:
     str: The reversed string.
     """
     # check if input is a string
-    if not isinstance(input_string, str):
-        return "[error]: Input must be a string"
+    if not isinstance(input_str, str):
+        return "[error]: Input must be a string\n"
+    
+    print(f"[string-reverser]: Input string: '{input_str}'.")
     
     # reverse the string using slicing
-    reversed_string = input_string[::-1]
+    reversed_string = input_str[::-1]
     
     # format the output
-    result = f"[string-reverser]: The reversed string is: {reversed_string}"
+    result = f"[string-reverser]: The reversed string is: '{reversed_string}'.\n"
     
     return result
 
-def timer(input_string):
+async def timer(input_str):
     """
     Timer function to set a timer for a specified duration.
 
     Parameters:
-    input_string (str): The duration of the timer in seconds.
+    input_str (str): The duration of the timer in seconds.
 
     Returns:
     str: A message indicating the timer has expired after the set-timer expires.
     """
     # check if input is a string
-    if not isinstance(input_string, str):
-        return "[error]: Input must be a string"
+    if not isinstance(input_str, str):
+        return "[error]: Input must be a string.\n"
     
     # convert the input to an integer
     try:
-        duration = int(input_string)
+        duration = int(input_str)
     except ValueError:
-        return "[error]: Invalid duration. Please provide a valid number of seconds."
+        return "[error]: Invalid duration. Please provide a valid number of seconds.\n"
 
     # setting timer
     i = duration
@@ -143,4 +152,47 @@ def timer(input_string):
         time.sleep(1)
         i -= 1
         
-    return f"[timer]: Timer for {duration} seconds has expired!"
+    return f"[timer]: Timer for {duration} seconds has expired!\n"
+
+async def summarise_text(input_str):
+    """
+    Text summarising function to generate concise and meaningful summaries of the input text.
+
+    Parameters:
+    input_str (str): The text that needs to be summarized.
+
+    Returns:
+    str: A summary of the input text.
+    """
+    # check if input is a string
+    if not isinstance(input_str, str):
+        return "[error]: Input must be a string.\n"
+    
+    # prepare input
+    inputs = await asyncio.to_thread(tokenizer,
+            f"summarize: {input_str}", 
+            max_length = 512, 
+            return_tensors = "pt", 
+            truncation = True)
+    
+    # generate summary
+    summary_ids = await asyncio.to_thread(model.generate,
+        inputs.input_ids, 
+        num_beams = 4, 
+        max_length = 100, 
+        early_stopping = True)
+    
+    # decode summary
+    summary = await asyncio.to_thread(tokenizer.decode,
+        summary_ids[0], 
+        skip_special_tokens = True)
+
+    # # using the Hugging Face pipeline for summarization
+    # summarizer = pipeline("summarization", model = "Falconsai/text_summarization")
+    # # summarizer = pipeline("summarization", model = "sshleifer/distilbart-cnn-12-6")
+    # summary = await asyncio.to_thread(summarizer, input_str, max_length = 100, min_length = 20, do_sample = False)
+
+    print(f"[summarizer]: Input text: '{input_str}'")
+
+    # return f"[summarizer]: {summary[0]['summary_text']}\n"
+    return f"[summarizer]: {summary}\n"

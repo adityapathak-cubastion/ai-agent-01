@@ -1,17 +1,12 @@
 from termcolor import colored
-from tool_functions import basic_calculator, reverse_string, timer
-import requests, json
+from tool_functions import basic_calculator, reverse_string, timer, summarise_text
+import requests, json, aiohttp, asyncio
+
 
 class OllamaModel:
-    def __init__(self, model, system_prompt, temperature = 0, stop = None):
+    def __init__(self, model, system_prompt, temperature = 0.2, stop = None):
         """
         Initializes the OllamaModel with the given parameters.
-
-        Parameters:
-        model (str): The name of the model to use.
-        system_prompt (str): The system prompt to use.
-        temperature (float): The temperature setting for the model.
-        stop (str): The stop token for the model.
         """
         self.model_endpoint = "http://localhost:11434/api/generate"
         self.temperature = temperature
@@ -20,15 +15,9 @@ class OllamaModel:
         self.headers = {"Content-Type": "application/json"}
         self.stop = stop
 
-    def generate_text(self, prompt):
+    async def generate_text(self, prompt):
         """
         Generates a response from the Ollama model based on the provided prompt.
-
-        Parameters:
-        prompt (str): The user query to generate a response for.
-
-        Returns:
-        dict: The response from the model as a dictionary.
         """
         payload = {
             "model": self.model,
@@ -36,29 +25,23 @@ class OllamaModel:
             "prompt": prompt,
             "system": self.system_prompt,
             "stream": False,
-            "temperature" : self.temperature,
-            "stop" : self.stop # check usage of options {} for temperature and stop - https://github.com/ollama/ollama/blob/main/docs/api.md
+            "temperature": self.temperature,
+            "stop": self.stop
         }
 
         try:
-            request_response = requests.post(
-                self.model_endpoint, 
-                headers = self.headers, 
-                data = json.dumps(payload)
-            )
+            async with aiohttp.ClientSession() as session:
+                async with session.post(self.model_endpoint, headers = self.headers, json = payload) as request_response:
+                    request_response_json = await request_response.json()
+                    response = request_response_json['response']
+                    response_dict = json.loads(response)
 
-            print("REQUEST RESPONSE", request_response)
-            request_response_json = request_response.json()
-            response = request_response_json['response']
-            response_dict = json.loads(response)
+                    print(f"\n\n[ollama response]: {response_dict}")
 
-            print(f"\n\n[ollama response]: {response_dict}")
-
-            return response_dict
-        except requests.RequestException as e:
-            response = {"[error]": f"Error in invoking model! {str(e)}"}
+                    return response_dict
+        except aiohttp.ClientError as e:
+            response = {"[error]": f"Error in invoking model! {str(e)}."}
             return response
-
 class ToolBox:
     def __init__(self):
         self.tools_dict = {}
@@ -124,14 +107,28 @@ TOOLS AND WHEN TO USE THEM:
    - Example inputs and outputs:
      Input: "Set a timer for 10 seconds"
      Output: {{"tool_choice": "timer", "tool_input": "10"}}
-      
+
      Input: "Timer for 60 seconds"
      Output: {{"tool_choice": "timer", "tool_input": "60"}}
 
      Input: "Timer for seconds"
      Output: {{"tool_choice": "timer", "tool_input": "Error: Invalid duration. Please provide a valid number of seconds."}}
 
-4. no tool: Use for general conversation and questions
+4. summarise_text: Use for summarizing text
+   - Input format: The text to be summarized as a string
+   - ALWAYS use this tool when user mentions "summarize" or asks to summarize text
+   - Simply extract the text to be summarized from the prompt and pass it to this tool; DO NOT summarize the text yourself
+   - Example inputs and outputs:
+     Input: "Summarize the text: 'This is a long text that needs to be summarized.'"
+     Output: {{"tool_choice": "summarise_text", "tool_input": "This is a long text that needs to be summarized."}}
+
+     Input: "Can you summarize 'this paragraph'?"
+     Output: {{"tool_choice": "summarise_text", "tool_input": "'this paragraph'"}}
+
+     Input: "Generate a summary of this 'long paragraph'."
+     Output: {{"tool_choice": "summarise_text", "tool_input": "'long paragraph'"}}
+
+5. no tool: Use for general conversation and questions
    - Example inputs and outputs:
      Input: "Who are you?"
      Output: {{"tool_choice": "no tool", "tool_input": "I am an AI assistant that can help you with calculations, reverse text, and answer questions. I can perform mathematical operations and reverse strings. How can I help you today?"}}
@@ -140,26 +137,36 @@ TOOLS AND WHEN TO USE THEM:
      Output: {{"tool_choice": "no tool", "tool_input": "I'm functioning well, thank you for asking! I'm here to help you with calculations, text reversal, or answer any questions you might have."}}
 
 STRICT RULES:
-1. For questions about identity, capabilities, or feelings:
-   - ALWAYS use "no tool"
-   - Provide a complete, friendly response
-   - Mention your capabilities
+1. For questions about identity, capabilities, feelings, and general questions:
+   - ALWAYS use `no tool`
+   - ALWAYS provide a complete, friendly response
+   - If user asks a question, ALWAYS answer it; do not simply repeat the question
+   - ALWAYS keep your answers relevant to the user's query
+   - If the user asks a question like 'What can you do?', ALWAYS mention your capabilities
 
 2. For ANY text reversal request:
-   - ALWAYS use "reverse_string"
+   - ALWAYS use `reverse_string`
    - Extract ONLY the text to be reversed
+   - Provide the text as is to the reversal tool; do not modify it before sending it to `reverse_string`
    - Remove quotes, "reverse of", and other extra text
 
 3. For ANY math operations:
-   - ALWAYS use "basic_calculator"
+   - ALWAYS use `basic_calculator`
    - Extract the numbers and operation
    - Convert text numbers to digits
 
 4. For ANY timer requests:
-   - ALWAYS use "timer"
+   - ALWAYS use `timer`
    - Extract the duration in seconds
    - Ensure the duration is a valid number
    - If the duration is not provided, tell the user to try again; DO NOT set a timer
+
+5. For ANY text summarization requests:
+   - ALWAYS use `summarise_text`
+   - If the user requests a summary, ALWAYS delegate the task to the `summarise_text` tool; DO NOT summarize the text yourself
+   - DO NOT modify the text given in the prompt before sending it to `summarise_text`
+   - Use the entire text given in the prompt as the input to `summarise_text`; DO NOT pass your own summary
+   - STRICTLY follow the input format for the `summarise_text` tool
 
 Here is a list of your tools along with their descriptions:
 {tool_descriptions}
@@ -171,77 +178,64 @@ class Agent:
     def __init__(self, tools, model_service, model_name, stop = None):
         """
         Initializes the agent with a list of tools and a model.
-
-        Parameters:
-        tools (list): List of tool functions.
-        model_service (class): The model service class with a generate_text method.
-        model_name (str): The name of the model to use.
         """
         self.tools = tools
         self.model_service = model_service
         self.model_name = model_name
         self.stop = stop
+        print("[agent]: Agent initialized with model:", model_name)
 
     def prepare_tools(self):
         """
         Stores the tools in the toolbox and returns their descriptions.
-
-        Returns:
-        str: Descriptions of the tools stored in the toolbox.
         """
         toolbox = ToolBox()
         toolbox.store(self.tools)
         tool_descriptions = toolbox.tools()
         return tool_descriptions
 
-    def think(self, prompt):
+    async def think(self, prompt):
         """
         Runs the generate_text method on the model using the system prompt template and tool descriptions.
-
-        Parameters:
-        prompt (str): The user query to generate a response for.
-
-        Returns:
-        dict: The response from the model as a dictionary.
         """
         tool_descriptions = self.prepare_tools()
         agent_system_prompt = system_prompt_template.format(tool_descriptions = tool_descriptions)
 
         # create an instance of the model service with the system prompt
-
-        model_instance = self.model_service( # OllamaModel
+        model_instance = self.model_service(
             model = self.model_name,
             system_prompt = agent_system_prompt,
-            temperature = 0,
+            temperature = 0.2,
             stop = self.stop
         )
 
         # generate and return the response dictionary
-        agent_response_dict = model_instance.generate_text(prompt)
+        print("[agent]: Thinking...\n")
+        agent_response_dict = await model_instance.generate_text(prompt)
         return agent_response_dict
 
-    def work(self, prompt):
+    async def work(self, prompt):
         """
         Parses the dictionary returned from think and executes the appropriate tool.
-
-        Parameters:
-        prompt (str): The user query to generate a response for.
-
-        Returns:
-        The response from executing the appropriate tool or the tool_input if no matching tool is found.
         """
-        agent_response_dict = self.think(prompt)
+        agent_response_dict = await self.think(prompt)
         tool_choice = agent_response_dict.get("tool_choice")
         tool_input = agent_response_dict.get("tool_input")
 
+        if tool_choice == "summarise_text":
+                response = await summarise_text(prompt)
+                # response = f"Here're two summaries for you!\n1. Prepared by the summarizer - {response}\n2. Prepared by LLM ({self.model_name}) - {str(tool_input)}"
+                print(f"[agent]: {colored(response, 'cyan')}")
+                return f"{response}"  # for streamlit app
+
         for tool in self.tools:
             if tool.__name__ == tool_choice:
-                response = tool(tool_input)
+                response = await tool(tool_input)  # make sure tool function is async
                 print(f"[agent]: {colored(response, 'cyan')}")
-                return
+                return f"{response}"  # for streamlit app
 
-        print(f"[agent]: {colored(tool_input, 'cyan')}")
-        return
+        print(f"[agent]: {colored(tool_input, 'cyan')}\n")
+        return f"{tool_input}" # for streamlit app
     
     # example usage
 if __name__ == "__main__":
@@ -258,12 +252,20 @@ if __name__ == "__main__":
        - "Reverse the word 'hello world'"
        - "Can you reverse 'Python Programming'?"
     
-    3. General questions (will get direct responses):
+    3. Timer:
+       - "Set a timer for 10 seconds"
+       - "Timer for 60 seconds"
+
+    4. Text summarization:
+       - "Summarize the text: 'This is a long text that needs to be summarized.'"
+       - "Can you summarize this paragraph?"
+    
+    5. General questions (will get direct responses):
        - "Who are you?"
        - "What can you help me with?"
     """
 
-    tools = [basic_calculator, reverse_string, timer]
+    tools = [basic_calculator, reverse_string, timer, summarise_text]
 
     # using ollama with llama3.2-3b model
     model_service = OllamaModel
@@ -277,7 +279,8 @@ if __name__ == "__main__":
     print("    1. Perform calculations (e.g., 'Calculate 15 plus 7')")
     print("    2. Reverse strings (e.g., 'Reverse hello world')")
     print("    3. Set a timer (e.g., 'Set a timer for 10 seconds')")
-    print("    4. Answer general questions (e.g., 'What day comes after Sunday?')")
+    print("    4. Summarize text (e.g., 'Summarize the text: This is a long text')")
+    print("    5. Answer general questions (e.g., 'What day comes after Sunday?')")
     print("Type 'exit' to end the conversation.\n")
 
     while True:
@@ -285,4 +288,4 @@ if __name__ == "__main__":
         if prompt.lower() == "exit":
             break
 
-        agent.work(prompt)
+        asyncio.run(agent.work(prompt))
